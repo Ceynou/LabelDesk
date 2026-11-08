@@ -1,0 +1,25 @@
+[package]
+name = "labeldesk"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+eframe = { version = "0.37", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp", "webp"] }
+rfd = "0.17"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = { version = "1.0.154", features = ["preserve_order"] }
+ort = "=2.0.0-rc.15"
+sha2 = "0.10"
+uuid = { version = "1", features = ["v7"] }
+unicode-segmentation = "1"
+ab_glyph = "0.2"
+unicode-normalization = "0.1"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+jxl-oxide = { version = "0.12.6", features = ["image"] }
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 2
