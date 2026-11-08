@@ -896,3 +896,54 @@ fn ctrl_dragging_a_corner_distorts_the_box() {
     let skew = super::canvas::transform_quad(points, 1, [5.0, 0.0], 1);
     assert_eq!((skew[0][0] - points[0][0], skew[1][0] - points[1][0]), (5.0, 5.0));
 }
+
+/// The added models through the real window: text blocks, then lines and characters, then the
+/// characters of one line (skipped when the models or ONNX Runtime are not on this computer).
+#[test]
+fn ai_text_blocks_then_lines_and_characters_through_the_window() {
+    let o = crate::zoo::Options::default();
+    if crate::runtime::locate(crate::runtime::Component::OnnxRuntime, None).is_none() || crate::zoo::locate(crate::zoo::ZooId::AnimeText, &o).is_err() || crate::zoo::locate(crate::zoo::ZooId::Charspot, &o).is_err() {
+        eprintln!("models or ONNX Runtime not here; skipping");
+        return;
+    }
+    let mut h = H::new("zoo");
+    h.app.page = 0;
+    h.app.op(|p, _, _, _| p.annotations.clear());
+    let wait = |h: &mut H| {
+        for _ in 0..1200 {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            h.frame(vec![]);
+            if h.app.worker.pending() == 0 {
+                break;
+            }
+        }
+        for _ in 0..3 {
+            h.frame(vec![]);
+        }
+    };
+    let ctx = h.ctx.clone();
+    h.app.ai_zoo_pages(&[0], ai::JobKind::Blocks, &ctx);
+    wait(&mut h);
+    let regions = h.app.cur().unwrap().annotations.iter().filter(|a| a.level == Level::Region).count();
+    assert!(regions >= 3, "text blocks proposed: {regions} ({:?})", h.app.message);
+    h.app.ai_read_blocks(0, None, &ctx);
+    wait(&mut h);
+    let page = h.app.cur().unwrap().clone();
+    let line = page.annotations.iter().find(|a| a.level == Level::Line && a.text() == "いらっしゃいませ").expect("the line was read");
+    assert_eq!(crate::assist::chars_of(&page, &line.id).len(), 8);
+    assert!(line.parent.as_ref().is_some_and(|p| page.get(p).is_some_and(|r| r.level == Level::Region)), "the line sits in its block");
+    // characters of a line drawn by hand, with its text typed in
+    let id = line.id.clone();
+    h.app.op(|p, _, _, _| p.annotations.retain(|a| !(a.level == Level::Char && a.parent.as_deref() == Some(id.as_str()))));
+    h.app.selection = vec![id.clone()];
+    h.app.ai_find_chars(&ctx);
+    wait(&mut h);
+    let page = h.app.cur().unwrap().clone();
+    let chars = crate::assist::chars_of(&page, &id);
+    assert_eq!(chars.len(), 8, "{:?}", h.app.message);
+    assert!(chars.iter().all(|c| c.provenance.origin == Origin::Ai && c.review.state == ReviewState::AiProposed));
+    assert!(h.app.models_ui.loaded.contains_key(&crate::zoo::ZooId::Charspot), "the window knows what ran");
+    // one undo step per run
+    h.app.undo(false);
+    assert!(crate::assist::chars_of(h.app.cur().unwrap(), &id).is_empty());
+}

@@ -963,6 +963,11 @@ impl App {
         match self.page_texture(&ctx, &page_id) {
             Some(t) => {
                 painter.image(t.id(), img_rect, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+                if self.show_text_mask {
+                    if let Some(m) = self.mask_texture(&ctx, &page_id) {
+                        painter.image(m.id(), img_rect, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+                    }
+                }
             }
             None => {
                 painter.rect_filled(img_rect, 0.0, Color32::from_rgb(50, 52, 60));

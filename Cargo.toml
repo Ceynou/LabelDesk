@@ -9,7 +9,7 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 rfd = "0.17"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.154", features = ["preserve_order"] }
-ort = "=2.0.0-rc.15"
+ort = { version = "=2.0.0-rc.15", default-features = false, features = ["std", "load-dynamic", "api-22"] }
 sha2 = "0.10"
 uuid = { version = "1", features = ["v7"] }
 unicode-segmentation = "1"
@@ -17,6 +17,10 @@ ab_glyph = "0.2"
 unicode-normalization = "0.1"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 jxl-oxide = { version = "0.12.6", features = ["image"] }
+libloading = "0.8"
+ureq = "3"
+flate2 = "1"
+tar = "0.4"
 
 [profile.dev]
 opt-level = 1

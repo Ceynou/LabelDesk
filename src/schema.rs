@@ -13,7 +13,7 @@ use serde_json::Value;
 use crate::geom::{self, P};
 use crate::ocr::ModelRef;
 
-pub const SCHEMA_VERSION: &str = "1.2.0";
+pub const SCHEMA_VERSION: &str = "1.3.0";
 pub const PROJECT_FORMAT: &str = "labeldesk.comic-ocr.project";
 pub const PAGE_FORMAT: &str = "labeldesk.comic-ocr.page";
 
@@ -923,10 +923,11 @@ impl Annotation {
 
 // ------------------------------------------------------------------ inference records
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum PredictionStatus {
     /// Became an annotation (see `annotation_id`).
+    #[default]
     Proposed,
     /// Not turned into an annotation because it overlaps existing work.
     SkippedOverlap,
@@ -936,7 +937,7 @@ pub enum PredictionStatus {
 }
 
 /// A raw model output. Never edited after the run, except its status.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
 pub struct Prediction {
     pub index: usize,
     pub quad: [P; 4],
@@ -953,6 +954,24 @@ pub struct Prediction {
     pub decided: Option<Stamp>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub reason: String,
+    /// Level of the proposed annotation (missing: a text line, as in schema 1.2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub level: Option<Level>,
+    /// Text type given to the proposal (e.g. `sfx`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub class: Option<String>,
+    /// The model's own name for what it found (`text_block`, `bubble`, `panel`...).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// Outline from the model's mask, when it is not simply `quad`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub polygon: Option<Vec<P>>,
+    /// Index of the prediction of this run it belongs to (a character's line).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<usize>,
+    /// Existing annotation it belongs to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -1205,14 +1224,39 @@ pub struct ModelSettings {
     /// The exact model used by this project. Changing it is an explicit action.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pinned: Option<ModelRef>,
-    /// Optional character-level model (muscgab/manga-ocr-charspot-small); not wired yet.
+    /// Character model (muscgab/manga-ocr-charspot-small) offered for "Find characters".
     #[serde(default)]
     pub character_model_enabled: bool,
+    /// Which model reads a selection again (Ctrl+Shift+R).
+    #[serde(default, skip_serializing_if = "is_default_reader")]
+    pub reader: Reader,
+}
+
+/// The model that reads text crops again.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum Reader {
+    #[default]
+    PpOcr,
+    Charspot,
+}
+
+impl Reader {
+    pub fn name(self) -> &'static str {
+        match self {
+            Reader::PpOcr => "PP-OCRv6 manga",
+            Reader::Charspot => "Manga OCR charspot",
+        }
+    }
+}
+
+fn is_default_reader(r: &Reader) -> bool {
+    *r == Reader::PpOcr
 }
 
 impl Default for ModelSettings {
     fn default() -> Self {
-        ModelSettings { enabled: true, auto_run_on_import: false, pinned: None, character_model_enabled: false }
+        ModelSettings { enabled: true, auto_run_on_import: false, pinned: None, character_model_enabled: false, reader: Reader::PpOcr }
     }
 }
 

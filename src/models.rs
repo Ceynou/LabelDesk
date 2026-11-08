@@ -80,9 +80,11 @@ pub struct KnownModel {
     pub note: &'static str,
 }
 
-/// Models the app knows about. Adding one: implement `ocr::OcrAdapter` (or a sibling trait for
-/// shapes and masks), list it here with its capabilities, and pin its exact revision per project.
-pub const KNOWN: [KnownModel; 5] = [
+/// Models the app knows about besides the ones in `zoo.rs` (AnimeText, charspot, Koharu layout
+/// and text masks), which run through `engine.rs` on ONNX Runtime or ncnn. Adding one: write an
+/// adapter (`ocr::OcrAdapter`, or a `zoo` adapter over `engine::Engine` for shapes and masks),
+/// list its capabilities, and record its exact files in every inference run.
+pub const KNOWN: [KnownModel; 2] = [
     KnownModel {
         id: "Kellenok/PP-OCRv6_manga",
         name: "PP-OCRv6 manga (v0.3, with language model)",
@@ -91,32 +93,11 @@ pub const KNOWN: [KnownModel; 5] = [
         note: "Runs offline with ONNX Runtime; detection and recognition with the manga language model.",
     },
     KnownModel {
-        id: "koharu/text-sam-ts-l",
-        name: "Koharu text segmentation",
-        capabilities: &[Capability::TextMask],
-        status: Status::Planned,
-        note: "Pixel masks of text for occlusion, ink and cleaning.",
-    },
-    KnownModel {
-        id: "koharu/layout-highres",
-        name: "Koharu comic layout",
-        capabilities: &[Capability::PanelDetection, Capability::ContainerDetection, Capability::RegionDetection, Capability::ReadingOrder],
-        status: Status::Planned,
-        note: "Panels, balloons and text blocks with an order; proposals at the matching levels.",
-    },
-    KnownModel {
-        id: "manga-ocr-ar-experimental",
+        id: "muscgab/manga-ocr-ar-experimental",
         name: "Manga OCR (autoregressive, experimental)",
         capabilities: &[Capability::Recognition],
         status: Status::Planned,
-        note: "A second reading to compare against; disagreements become review notes.",
-    },
-    KnownModel {
-        id: "muscgab/manga-ocr-charspot-small",
-        name: "Manga OCR charspot",
-        capabilities: &[Capability::CharDetection, Capability::Recognition],
-        status: Status::Planned,
-        note: "Character positions inside a line, replacing the even split.",
+        note: "A second reading to compare against; PyTorch only, not wired yet.",
     },
 ];
 

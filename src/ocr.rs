@@ -106,6 +106,20 @@ fn parse_version(file: &str, prefix: &str) -> Option<(u32, u32)> {
     Some((a.parse().ok()?, b.parse().ok()?))
 }
 
+/// The newest "What's new in vX.Y" of the model card.
+fn readme_version(p: &Path) -> Option<(u32, u32)> {
+    let text = std::fs::read_to_string(p).ok()?;
+    text.lines()
+        .filter(|l| l.starts_with('#') && l.to_ascii_lowercase().contains("what's new in v"))
+        .filter_map(|l| {
+            let rest = &l[l.to_ascii_lowercase().find("new in v")? + 8..];
+            let num: String = rest.chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect();
+            let (a, b) = num.split_once('.')?;
+            Some((a.parse().ok()?, b.trim_end_matches('.').parse().ok()?))
+        })
+        .max()
+}
+
 /// All usable PP-OCRv6_manga versions (≥ v0.2) in the local cache, newest first.
 pub fn find_candidates() -> Vec<Candidate> {
     let mut out = Vec::new();
@@ -139,8 +153,15 @@ pub fn find_candidates() -> Vec<Candidate> {
                 })
                 .ok()
                 .flatten();
-            let dets = versions("det", "manga_det_v");
-            let recs = versions("rec", "manga_rec_v");
+            let mut dets = versions("det", "manga_det_v");
+            let mut recs = versions("rec", "manga_rec_v");
+            // from v0.3 the files keep stable names (det/manga_det.onnx); the version is in the README
+            let (sd, sr) = (s.join("det").join("manga_det.onnx"), s.join("rec").join("manga_rec.onnx"));
+            if dets.is_empty() && sd.exists() && sr.exists() {
+                let v = readme_version(&s.join("README.md")).unwrap_or(if lm.is_some() { (0, 3) } else { (0, 2) });
+                dets.push((v, sd));
+                recs.push((v, sr));
+            }
             for (v, det) in &dets {
                 if *v < MIN_VERSION {
                     continue;
@@ -213,7 +234,16 @@ pub struct PpOcrManga {
     pub unclip_ratio: f64,
 }
 
-static ENV: std::sync::OnceLock<Result<ort::environment::Environment, String>> = std::sync::OnceLock::new();
+/// ONNX Runtime library chosen in the settings (empty: find it); set by the worker per job.
+static ORT_PATH: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
+
+pub fn set_ort_path(p: Option<PathBuf>) {
+    *ORT_PATH.lock().unwrap() = p;
+}
+
+fn ort_path() -> Option<&'static Path> {
+    ORT_PATH.lock().unwrap().clone().map(|p| &*Box::leak(p.into_boxed_path()))
+}
 
 impl PpOcrManga {
     /// Load a specific cached version. `expect` pins the artifacts: if a file's hash differs,
@@ -228,10 +258,9 @@ impl PpOcrManga {
                 }
             }
         }
-        let env = ENV
-            .get_or_init(|| ort::init().with_name("labeldesk").build().map_err(|e| e.to_string()))
-            .as_ref()
-            .map_err(|e| e.clone())?;
+        let env = crate::runtime::ort_env(ort_path())?;
+        let mut model = model;
+        model.runtime = crate::runtime::ort_runtime_label();
         let threads = std::thread::available_parallelism().map(|n| n.get().clamp(1, 8)).unwrap_or(4);
         let load = |p: &Path| -> Result<Session, String> {
             Session::builder(env)

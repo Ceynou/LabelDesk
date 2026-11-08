@@ -5,8 +5,11 @@ manga**. It draws and checks text at every level (panels, balloons, text regions
 characters), records exact transcriptions, reading order, legibility and who verified what, and
 keeps everything in plain, Git-friendly JSON files.
 
-It runs fully offline. An optional manga OCR model (PP-OCRv6 manga, with its language model)
-proposes lines and readings; every proposal stays a proposal until a person accepts it.
+It runs fully offline. Optional AI models propose lines and readings (PP-OCRv6 manga), text
+blocks (AnimeText YOLO), characters with their own boxes in reading order (manga-ocr-charspot),
+panels, balloons, text and sound effects with their outlines (Koharu layout) and text pixel masks
+(Koharu text masks); every proposal stays a proposal until a person accepts it. Models run on
+the processor with ONNX Runtime, or on any graphics card with a Vulkan driver through ncnn.
 
 ![Review Mode](shots/review.png)
 
@@ -31,8 +34,13 @@ proposes lines and readings; every proposal stays a proposal until a person acce
   Ctrl+click pages in the page list for bulk page actions.
 - **Focus**: H hides the selection (Shift+H shows it again); View → Highlight problems outlines
   labels with validation problems; F8 jumps to the next one.
-- **AI**: pre-annotate pages, read a region, read the selection again (Ctrl+Shift+R). The model
-  version and every file are pinned per project.
+- **AI**: pre-annotate pages, read a region, read the selection again (Ctrl+Shift+R, with
+  PP-OCR or charspot); find text blocks; read text regions into lines and character boxes; find
+  the characters of selected lines (Ctrl+Shift+K); find panels, balloons, text and sound
+  effects; mark text pixels (View → Text mask). Every run records the exact model files with
+  their SHA-256 and what ran them.
+- **Models window** (AI → Models…): installs the runtimes, chooses where each model runs
+  (processor or graphics card), converts PyTorch-only models to ONNX and any model to ncnn.
 - **Version control**: a page is committed to Git once its review is complete; unfinished pages
   stay as uncommitted changes.
 - **Releases**: reproducible dataset exports (native JSON, JSONL, COCO, flattened crops) with
@@ -74,22 +82,61 @@ cargo build --release
 ./target/release/labeldesk path/to/project  # opens a project folder
 ```
 
-The first build downloads the dependencies, including the ONNX Runtime library used for the
-OCR model (`cargo build --offline` works once they are cached).
+The first build downloads the Rust dependencies (`cargo build --offline` works once they are
+cached). No AI runtime is built in: the app starts the same on every processor.
 
-### 4. The OCR model (optional)
+### 4. AI models (optional)
 
-LabelDesk looks for **Kellenok/PP-OCRv6_manga** (v0.2 or newer; v0.3 adds the language model)
-in the Hugging Face cache (`~/.cache/huggingface/hub`, or `$HF_HOME`/`$HF_HUB_CACHE`).
-Download it once, for example with:
+Models are read from the Hugging Face cache (`~/.cache/huggingface/hub`, or
+`$HF_HOME`/`$HF_HUB_CACHE`); nothing is downloaded behind your back. Download the ones you want:
 
 ```sh
 pip install -U huggingface_hub
-huggingface-cli download Kellenok/PP-OCRv6_manga
+hf download Kellenok/PP-OCRv6_manga            # lines + reading (v0.2 or newer)
+hf download deepghs/AnimeText_yolo             # text blocks
+hf download muscgab/manga-ocr-charspot-small   # characters with boxes (CC BY-NC-SA weights)
+hf download mayocream/koharu-layout-highres    # panels, balloons, text, sound effects
+hf download mayocream/koharu-text-sam-ts-l     # text masks
 ```
 
-Without the model everything works except the AI actions. The version a project uses is
-pinned in its settings; newer cached versions are offered but never switched silently.
+Then open **AI → Models…**:
+
+![Models window](shots/models.png)
+
+| Program | What for | Install |
+|---|---|---|
+| ONNX Runtime 1.31.1 | runs models on the processor | button (Microsoft's official build, 11 MB, SHA-256 checked) |
+| ncnn 20261020 | runs converted models on the graphics card (Vulkan) | button (Tencent's official build, 10 MB) |
+| pnnx 20261020 | converts ONNX models to ncnn | installed when you first convert |
+
+The official ONNX Runtime runs on processors without AVX too (copies built for newer processors
+are tested in a separate process first and refused instead of stopping the app).
+
+| Model | Runs from | Graphics card |
+|---|---|---|
+| PP-OCRv6 manga | its ONNX files | — |
+| AnimeText YOLO (n/s/m/l/x) | its ONNX files | convert to ncnn |
+| manga-ocr-charspot-small | its ONNX file | not possible (decoding inside the graph); about 20 ms per crop on a processor |
+| Koharu layout | **Convert to ONNX** first | then convert to ncnn |
+| Koharu text masks | **Convert to ONNX** first | then convert to ncnn |
+
+The Koharu models ship as PyTorch weights only. **Convert to ONNX** needs Python 3.10+ once:
+LabelDesk makes a private environment in its data folder (PyTorch processor build and the
+model's own code: RF-DETR 1.7.0 or Hi-SAM at a fixed commit, about 1 GB on disk) and runs
+`convert/export_koharu.py`, which computes attention in slices so the exported model needs a
+fraction of the memory. The layout model can be converted for 1920 px (its own size), 1536,
+1152 or 960 px; smaller is faster and lighter but misses more small text. Each conversion
+writes `conversion.json` (sources with SHA-256, tools, outputs) next to its result.
+
+Data folder: `~/.local/share/labeldesk` (Linux), `%LOCALAPPDATA%\LabelDesk` (Windows),
+`~/Library/Application Support/LabelDesk` (macOS), or `$LABELDESK_DATA_DIR`.
+
+From the command line: `labeldesk --install onnxruntime|ncnn|pnnx`,
+`labeldesk --convert animetext|layout|textmask [onnx|ncnn]`,
+`labeldesk --try-model animetext|charspot|layout|textmask picture.png [onnx|ncnn-gpu|ncnn-cpu]`.
+
+The PP-OCR version a project uses is pinned in its settings; newer cached versions are offered
+but never switched silently.
 
 ## Using it
 

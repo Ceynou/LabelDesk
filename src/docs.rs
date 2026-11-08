@@ -6,7 +6,7 @@ pub const GITIGNORE: &str = "# LabelDesk local state (recovery copies, session l
 
 pub const GITATTRIBUTES: &str = "# Canonical annotation files are text; keep line endings stable.\n*.json text eol=lf\n*.jsonl text eol=lf\n# Large binaries: uncomment to store them with Git LFS.\n# images/** filter=lfs diff=lfs merge=lfs -text\n# masks/** filter=lfs diff=lfs merge=lfs -text\n# releases/** filter=lfs diff=lfs merge=lfs -text\n";
 
-pub const FORMAT_MD: &str = r#"# Comic OCR dataset format (schema 1.2)
+pub const FORMAT_MD: &str = r#"# Comic OCR dataset format (schema 1.3)
 
 This folder is a LabelDesk project. Everything here is plain JSON or PNG and can be read
 without LabelDesk. The JSON Schemas in `schema/` describe each file.
@@ -133,6 +133,17 @@ version, revision, SHA-256 of every artifact), the full preprocessing/post-proce
 configuration, time, the scope (page, region, or a single annotation with the transform used)
 and every raw prediction with its model-native scores. Scores are **not** calibrated
 probabilities. Raw predictions are never edited; only their `status` changes.
+
+Since schema 1.3 a prediction can be more than a text line: `level` (`panel`, `container`,
+`region`, `line`, `char`; missing means a line), `class` (the text type it was given, e.g. `sfx`),
+`label` (the model's own class name: `text_block`, `bubble`, `panel`, `onomatopoeia`...),
+`polygon` (an outline from the model's mask, when it is not simply `quad`), `parent` (index of
+another prediction of the same run it belongs to: a character's line) and `parent_id` (an
+existing annotation it belongs to). `model.artifacts` lists the original files and, for
+converted models, the converted copy that ran (`converted_onnx`, `ncnn_param`, `ncnn_bin`);
+`model.runtime` says what ran it (ONNX Runtime on the processor, or ncnn on a named graphics
+card). Text-mask runs record the page mask in `config.mask` (`path`, `sha256`, `size`) and give
+lines and regions an `ink` entry in `masks` with their part of it.
 `provenance.fields` tracks each field group (`geometry`, `transcription`, `reading_order`,
 `metadata`): `proposed`, `accepted`, `corrected`, `manual`, `verified`,
 `changed_after_verification`.
@@ -284,7 +295,10 @@ pub const PAGE_SCHEMA: &str = r##"{
       "model": {"type": "object", "required": ["adapter", "name", "repo", "version", "revision", "artifacts"]},
       "scope": {"type": "object", "required": ["kind"], "properties": {"kind": {"enum": ["page", "region", "annotation"]}}},
       "predictions": {"type": "array", "items": {"type": "object", "required": ["index", "quad", "text", "status"], "properties": {
-        "quad": {"$ref": "#/$defs/quad"}, "status": {"enum": ["proposed", "skipped_overlap", "rejected", "alternative"]}}}}}}
+        "quad": {"$ref": "#/$defs/quad"}, "status": {"enum": ["proposed", "skipped_overlap", "rejected", "alternative"]},
+        "level": {"enum": ["panel", "container", "region", "line", "word", "char"]}, "class": {"type": "string"}, "label": {"type": "string"},
+        "polygon": {"type": "array", "items": {"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2}},
+        "parent": {"type": "integer", "minimum": 0}, "parent_id": {"type": "string"}}}}}}
   }
 }
 "##;

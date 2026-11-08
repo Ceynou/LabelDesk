@@ -119,7 +119,7 @@ fn s6_s7_offline_model_proposes_and_people_correct_or_reject() {
     assert!(adapter.model().version.as_str() >= "v0.2");
     let i = 2; // western page: caption done by hand, the rest empty
     let e = s.manifest.pages.iter().find(|e| e.id == s.pages[i].page_id).unwrap().clone();
-    let job = ai::Job { page_id: e.id.clone(), image_path: s.image_path(&e), image_sha256: e.sha256.clone(), kind: ai::JobKind::Page, pinned: None, user: "alice".into() };
+    let job = ai::Job { page_id: e.id.clone(), image_path: s.image_path(&e), image_sha256: e.sha256.clone(), kind: ai::JobKind::Page, pinned: None, user: "alice".into(), zoo: Default::default(), reader: Reader::PpOcr };
     let run = ai::run_job(adapter.as_mut(), &job).unwrap();
     assert!(run.model.artifacts.iter().all(|a| a.sha256.len() == 64));
     let before = s.pages[i].clone();
@@ -160,7 +160,7 @@ fn s6_s7_offline_model_proposes_and_people_correct_or_reject() {
     let sign = s.pages[0].annotations.iter().find(|a| a.text() == "喫茶店").unwrap().clone();
     let r = sign.rectification.clone().unwrap();
     let e0 = s.entry(&s.pages[0].page_id).unwrap().clone();
-    let job = ai::Job { page_id: e0.id.clone(), image_path: s.image_path(&e0), image_sha256: e0.sha256.clone(), kind: ai::JobKind::Recognize { annotation_id: sign.id.clone(), quad: r.source, target_size: r.target_size, rectified: true }, pinned: None, user: "alice".into() };
+    let job = ai::Job { page_id: e0.id.clone(), image_path: s.image_path(&e0), image_sha256: e0.sha256.clone(), kind: ai::JobKind::Recognize { annotation_id: sign.id.clone(), quad: r.source, target_size: r.target_size, rectified: true }, pinned: None, user: "alice".into(), zoo: Default::default(), reader: Reader::PpOcr };
     let run = ai::run_job(adapter.as_mut(), &job).unwrap();
     assert_eq!(run.predictions[0].text, "喫茶店");
     ai::apply_run(&mut s.pages[0], run, &s.manifest.config);

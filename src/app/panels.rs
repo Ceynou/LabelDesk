@@ -239,6 +239,7 @@ impl App {
             });
             ui.menu_button("View", |ui| {
                 ui.checkbox(&mut self.show_problems, "Highlight problems (red)").on_hover_text("Labels with validation problems get a red outline; F8 jumps to the next one");
+                ui.checkbox(&mut self.show_text_mask, "Text mask").on_hover_text("The text pixels Koharu text masks found on this page (AI → Mark the text pixels), in magenta");
                 if ui.button(format!("Next problem   {}", self.settings.shortcut("next_problem"))).clicked() {
                     self.next_problem(&ctx);
                     ui.close();
@@ -301,15 +302,66 @@ impl App {
                     self.set_tool(Tool::AiRegion);
                     ui.close();
                 }
-                if ui.add_enabled(!self.selection.is_empty(), egui::Button::new(format!("Read the selection again   {}", self.settings.shortcut("reread")))).clicked() {
+                if ui.add_enabled(!self.selection.is_empty(), egui::Button::new(format!("Read the selection again   {}", self.settings.shortcut("reread")))).on_hover_text(format!("With {} (choose in AI → Models…)", self.cfg().model.reader.name())).clicked() {
                     let ids = self.selection.clone();
                     self.reread(&ids);
                     ui.close();
                 }
                 ui.separator();
+                ui.label(RichText::new("More models").color(MUTED).size(11.0));
+                let o = self.settings.models.clone();
+                let whys: BTreeMap<crate::zoo::ZooId, Option<String>> = crate::zoo::ZooId::ALL.iter().map(|&z| (z, self.models_ui.ready(z, &o).err())).collect();
+                let item = move |ui: &mut egui::Ui, text: &str, id: crate::zoo::ZooId, enabled: bool| {
+                    let why = whys.get(&id).cloned().flatten();
+                    let r = ui.add_enabled(enabled && why.is_none(), egui::Button::new(text));
+                    match why {
+                        Some(w) => r.on_disabled_hover_text(format!("{}: {w}", id.name())),
+                        None => r.on_hover_text(format!("{} · {}", id.name(), o.backend(id).name())),
+                    }
+                };
+                let n = self.pages().len();
+                if item(ui, "Find text blocks on this page (AnimeText)", crate::zoo::ZooId::AnimeText, has).clicked() {
+                    let p = self.page;
+                    self.ai_zoo_pages(&[p], ai::JobKind::Blocks, &ctx);
+                    ui.close();
+                }
+                if item(ui, "Find text blocks on all pages (AnimeText)", crate::zoo::ZooId::AnimeText, has && n > 1).clicked() {
+                    let all: Vec<usize> = (0..n).collect();
+                    self.ai_zoo_pages(&all, ai::JobKind::Blocks, &ctx);
+                    ui.close();
+                }
+                if item(ui, "Find panels, balloons, text and sound effects (Koharu layout)", crate::zoo::ZooId::KoharuLayout, has).clicked() {
+                    let p = self.page;
+                    self.ai_zoo_pages(&[p], ai::JobKind::Layout, &ctx);
+                    ui.close();
+                }
+                if item(ui, "Mark the text pixels of this page (Koharu text masks)", crate::zoo::ZooId::KoharuTextMask, has).clicked() {
+                    let p = self.page;
+                    self.ai_zoo_pages(&[p], ai::JobKind::TextMask, &ctx);
+                    ui.close();
+                }
+                let regions: Vec<String> = self.cur().map(|p| p.annotations.iter().filter(|a| a.level == Level::Region && self.selection.contains(&a.id)).map(|a| a.id.clone()).collect()).unwrap_or_default();
+                let read_label = if regions.is_empty() { "Read text regions into lines and characters (charspot)".to_string() } else { format!("Read the {} selected region(s) into lines and characters (charspot)", regions.len()) };
+                if item(ui, &read_label, crate::zoo::ZooId::Charspot, has).on_hover_text("Each text region without lines gets its lines, their text and one box per character, in reading order").clicked() {
+                    let p = self.page;
+                    let only = (!regions.is_empty()).then_some(regions.as_slice());
+                    self.ai_read_blocks(p, only, &ctx);
+                    ui.close();
+                }
+                let lines = self.cur().map(|p| p.annotations.iter().filter(|a| matches!(a.level, Level::Line | Level::Word) && self.selection.contains(&a.id)).count()).unwrap_or(0);
+                if item(ui, &format!("Find the characters of the selected line(s) (charspot)   {}", self.settings.shortcut("ai_chars")), crate::zoo::ZooId::Charspot, lines > 0).clicked() {
+                    self.ai_find_chars(&ctx);
+                    ui.close();
+                }
+                if ui.button("Models…").on_hover_text("Where each model runs (processor or graphics card), installing runtimes, converting models").clicked() {
+                    self.models_ui.open = true;
+                    ui.close();
+                }
+                ui.separator();
                 ui.label(RichText::new("Model roles").color(MUTED).size(11.0));
                 for c in crate::models::Capability::ALL {
-                    let names: Vec<String> = crate::models::providers(c).map(|m| format!("{}{}", m.name, if m.status == crate::models::Status::Planned { " (planned)" } else { "" })).collect();
+                    let mut names: Vec<String> = crate::models::providers(c).filter(|m| m.status == crate::models::Status::Available).map(|m| m.name.to_string()).collect();
+                    names.extend(crate::zoo::ZooId::ALL.iter().filter(|z| z.capabilities().contains(&c)).map(|z| z.name().to_string()));
                     ui.label(RichText::new(format!("{}: {}", c.name(), if names.is_empty() { "—".to_string() } else { names.join(", ") })).size(11.0));
                 }
                 if ui.add_enabled(self.worker.pending() > 0, egui::Button::new("Cancel queued AI work")).clicked() {

@@ -27,6 +27,12 @@ cargo run -- --screenshot shots/review.png  # renders ~120 frames, saves a PNG, 
 | `src/assist.rs` | assisted annotation: character proposals (incl. monospace and tate-chu-yoko), reading order, quick-review needs, review workflow passes (`Pass`, `Workflow`, `page_steps`), grouping, shape helpers, taxonomy migration |
 | `src/ai.rs`, `src/ocr.rs`, `src/ctc_lm.rs` | background OCR worker, PP-OCRv6 manga adapter, CTC + language-model decoder |
 | `src/models.rs` | model capabilities (lines, reading, characters, regions, balloons, panels, masks, order) and known/planned models |
+| `src/zoo.rs` | AnimeText, charspot, Koharu layout and text-mask adapters: locating files in the HF cache, pre/post-processing, line grouping, mask outlines |
+| `src/engine.rs`, `src/ncnn.rs` | one `Engine` over ONNX Runtime or ncnn (Vulkan GPU / CPU); ncnn's C API loaded at run time |
+| `src/runtime.rs` | data folder, pinned official downloads (ONNX Runtime, ncnn, pnnx) with SHA-256, probing libraries in a child process, cached file hashes |
+| `src/convert.rs`, `convert/export_koharu.py` | conversions: PyTorch → ONNX in a private Python venv, ONNX → ncnn with pnnx; `conversion.json` records |
+| `src/app/models_window.rs` | the Models window |
+| `src/zoo_tests.rs` | proposals from the added models; real models on the sample page when installed |
 | `src/git.rs` | committing reviewed pages (only that page's files) |
 | `src/export.rs` | releases (native, JSONL, COCO, crops) and imports |
 | `src/docs.rs` | `FORMAT.md` and JSON Schemas written into projects |
@@ -62,9 +68,16 @@ cargo run -- --screenshot shots/review.png  # renders ~120 frames, saves a PNG, 
 - **A review pass**: add a `Pass` variant (name, hint, `per_page`, `edits_shapes`), its items in
   `assist::pass_items` / done test in `pass_checked`, its Enter behaviour in
   `App::review_confirm`, and its card in `review_cards.rs`.
-- **A model**: implement an adapter (see `ocr::OcrAdapter`), declare its `Capability` list in
-  `models.rs`, pin its revision and artifact hashes per project, and write its output as an
-  inference run whose predictions become proposals at the matching level.
+- **A model**: add a `ZooId` (repo, files in `zoo::locate`, capabilities, whether ncnn can run
+  it), an adapter over `engine::Engine` in `zoo.rs`, a `JobKind` handled in `ai::run_zoo`, and
+  a menu entry. Its output is an inference run whose predictions carry `level`, `class`,
+  `polygon` and `parent`/`parent_id`; `ai::apply_run` turns them into proposals. PP-OCR keeps
+  its own `ocr::OcrAdapter` path and per-project pin.
+- **Never link ONNX Runtime at build time.** `ort` uses `load-dynamic`: a prebuilt library
+  compiled for AVX stops the process before `main` on older processors. Libraries are probed in
+  a child process (`--probe-runtime`) before loading. Try models with
+  `cargo run -- --try-model animetext picture.png [onnx|ncnn-gpu|ncnn-cpu]`; point
+  `LABELDESK_DATA_DIR` at `target/ld-data` to keep test installs out of the real data folder.
 - **A validation rule**: add it to `validate::RULES` with a default severity and a test.
 
 ## Style

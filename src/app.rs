@@ -25,6 +25,7 @@ mod panels;
 mod review_mode;
 mod review_cards;
 mod find;
+pub mod models_window;
 #[cfg(test)]
 mod tests;
 
@@ -102,7 +103,7 @@ pub enum PageFilter {
 }
 
 /// Actions that can have a keyboard shortcut.
-pub const ACTIONS: [(&str, &str, &str); 45] = [
+pub const ACTIONS: [(&str, &str, &str); 46] = [
     ("review_mode", "Enter or leave Review Mode", "F6"),
     ("review_approve", "Review: approve and next", "Enter"),
     ("review_next", "Review: next annotation", "ArrowDown"),
@@ -144,6 +145,7 @@ pub const ACTIONS: [(&str, &str, &str); 45] = [
     ("redo", "Redo", "Ctrl+Y"),
     ("inspected", "Mark page inspected and complete", "Ctrl+I"),
     ("reread", "Read the selection again with AI", "Ctrl+Shift+R"),
+    ("ai_chars", "Find the characters of the selected lines with AI", "Ctrl+Shift+K"),
     ("hide", "Hide the selection (nothing selected: show all)", "H"),
     ("show_hidden", "Show hidden labels again", "Shift+H"),
     ("next_problem", "Next label with a problem", "F8"),
@@ -168,6 +170,35 @@ pub struct Settings {
     /// Commit a page to Git once its review is complete (projects inside a Git repository).
     #[serde(default = "yes")]
     pub git_commit_reviewed: bool,
+    /// Model variants, where each model runs, and runtime locations on this computer.
+    #[serde(default)]
+    pub models: crate::zoo::Options,
+}
+
+/// "3 panels, 5 balloons and 12 text regions": what a run added, by level.
+pub fn run_summary(run: &InferenceRun) -> String {
+    let mut counts: BTreeMap<Level, usize> = BTreeMap::new();
+    for p in run.predictions.iter().filter(|p| p.status == PredictionStatus::Proposed && p.annotation_id.is_some()) {
+        *counts.entry(p.level.unwrap_or(Level::Line)).or_default() += 1;
+    }
+    let name = |l: Level, n: usize| {
+        let s = match l {
+            Level::Panel => "panel",
+            Level::Container => "balloon or caption",
+            Level::Region => "text region",
+            Level::Line => "line",
+            Level::Word => "word",
+            Level::Char => "character box",
+            Level::Page => "page",
+        };
+        if n == 1 { format!("1 {s}") } else if s.ends_with("caption") { format!("{n} balloons or captions") } else { format!("{n} {s}{}", if s.ends_with('x') { "es" } else { "s" }) }
+    };
+    let parts: Vec<String> = counts.into_iter().map(|(l, n)| name(l, n)).collect();
+    match parts.len() {
+        0 => "nothing new".into(),
+        1 => parts[0].clone(),
+        _ => format!("{} and {}", parts[..parts.len() - 1].join(", "), parts[parts.len() - 1]),
+    }
 }
 
 fn yes() -> bool {
@@ -181,7 +212,7 @@ fn default_autosave() -> u32 {
 impl Default for Settings {
     fn default() -> Self {
         let user = std::env::var("USER").or_else(|_| std::env::var("USERNAME")).unwrap_or_else(|_| "annotator".into());
-        Settings { user: util::slug(&user), recent: Vec::new(), autosave_secs: 20, shortcuts: BTreeMap::new(), review_fullscreen: true, workflow: Default::default(), git_commit_reviewed: true }
+        Settings { user: util::slug(&user), recent: Vec::new(), autosave_secs: 20, shortcuts: BTreeMap::new(), review_fullscreen: true, workflow: Default::default(), git_commit_reviewed: true, models: Default::default() }
     }
 }
 
@@ -329,6 +360,11 @@ pub struct App {
     pub preview: Option<Preview>,
     pub worker: Worker,
     pub model: ModelStatus,
+    /// The Models window (runtimes, model files, conversions) and what the zoo models loaded as.
+    pub models_ui: models_window::ModelsUi,
+    /// Text masks of pages (from Koharu text masks), loaded on demand; shown over the page.
+    pub text_masks: HashMap<String, Arc<image::GrayImage>>,
+    pub show_text_mask: bool,
     pub message: Option<(String, f64, bool)>,
     pub dialogs: Dialogs,
     pub issues: Vec<Issue>,
@@ -373,6 +409,9 @@ impl App {
                 Err(e) => eprintln!("sample project: {e}"),
             }
             app.screenshot_state();
+            if std::env::var_os("LABELDESK_SHOT_MODELS").is_some() {
+                app.models_ui.open = true;
+            }
             return app;
         }
         let target = open.or_else(|| app.settings.recent.first().cloned().filter(|p| p.join("project.json").exists()));
@@ -391,9 +430,15 @@ impl App {
             layers.insert(l, true);
         }
         let mut settings = Settings::load();
+        let shot_models = screenshot.is_some() && std::env::var_os("LABELDESK_SHOT_MODELS").is_some();
         if screenshot.is_some() || cfg!(test) {
+            let models = settings.models.clone();
             settings = Settings::default();
             settings.user = "you".into();
+            if shot_models {
+                // picture of the Models window as this computer sees it
+                settings.models = models;
+            }
         }
         App {
             store: None,
@@ -435,6 +480,9 @@ impl App {
             preview: None,
             worker: Worker::start(move || repaint_ctx.request_repaint()),
             model: ModelStatus::Unknown,
+            models_ui: Default::default(),
+            text_masks: HashMap::new(),
+            show_text_mask: false,
             message: None,
             dialogs: Dialogs::default(),
             issues: Vec::new(),
@@ -587,6 +635,7 @@ impl App {
         let keep: Vec<String> = self.pages().iter().enumerate().filter(|(i, _)| i.abs_diff(idx) <= 1).map(|(_, p)| p.page_id.clone()).collect();
         self.images.retain(|k, _| keep.contains(k));
         self.textures.retain(|k, _| keep.contains(k));
+        self.text_masks.retain(|k, _| keep.contains(k));
         self.rebaseline();
     }
 
@@ -599,6 +648,35 @@ impl App {
         let img = Arc::new(crate::util::open_image(&path).ok()?.to_rgba8());
         self.images.insert(id.into(), img.clone());
         Some(img)
+    }
+
+    /// The latest text mask of a page (from memory, or the file its run recorded).
+    pub fn text_mask(&mut self, id: &str) -> Option<Arc<image::GrayImage>> {
+        if let Some(m) = self.text_masks.get(id) {
+            return Some(m.clone());
+        }
+        let s = self.store.as_ref()?;
+        let page = s.pages.iter().find(|p| p.page_id == id)?;
+        let rel = page.inference_runs.iter().rev().find_map(|r| r.config.get("mask").and_then(|m| m.get("path")).and_then(|p| p.as_str()).map(|p| p.to_string()))?;
+        let img = image::open(s.root.join(rel)).ok()?.to_luma8();
+        let m = Arc::new(img);
+        self.text_masks.insert(id.into(), m.clone());
+        Some(m)
+    }
+
+    /// The text mask drawn as a see-through magenta layer.
+    pub fn mask_texture(&mut self, ctx: &egui::Context, id: &str) -> Option<TextureHandle> {
+        let key = format!("mask:{id}");
+        if let Some(t) = self.textures.get(&key) {
+            return Some(t.clone());
+        }
+        let m = self.text_mask(id)?;
+        let (w, h) = (m.width() as usize, m.height() as usize);
+        let px: Vec<Color32> = m.pixels().map(|p| if p[0] > 0 { Color32::from_rgba_unmultiplied(236, 64, 160, 120) } else { Color32::TRANSPARENT }).collect();
+        let ci = egui::ColorImage { size: [w, h], source_size: vec2(w as f32, h as f32), pixels: px };
+        let t = ctx.load_texture(key.clone(), ci, TextureOptions::NEAREST);
+        self.textures.insert(key, t.clone());
+        Some(t)
     }
 
     pub fn page_texture(&mut self, ctx: &egui::Context, id: &str) -> Option<TextureHandle> {
@@ -815,13 +893,16 @@ impl App {
                     }
                     self.model = ModelStatus::Ready(m);
                 }
+                ai::Event::ZooReady(id, m) => {
+                    self.models_ui.loaded.insert(id, m);
+                }
                 ai::Event::Failed { page_id, error } => {
-                    if matches!(self.model, ModelStatus::Unknown) {
+                    if matches!(self.model, ModelStatus::Unknown) && !error.contains("convert") && !error.contains("charspot") && !error.contains("AnimeText") && !error.contains("Koharu") {
                         self.model = ModelStatus::Missing(error.clone());
                     }
                     self.error(format!("AI on {page_id}: {error}"));
                 }
-                ai::Event::Done { page_id, run } => {
+                ai::Event::Done { page_id, run, mask } => {
                     let cur = self.cur_id();
                     if cur.as_deref() == Some(page_id.as_str()) {
                         self.commit();
@@ -830,8 +911,29 @@ impl App {
                     let Some(s) = self.store.as_mut() else { continue };
                     let Some(i) = s.index_of(&page_id) else { continue };
                     let before = s.pages[i].clone();
-                    let single = matches!(run.scope, RunScope::Annotation { .. });
+                    let single = matches!(run.scope, RunScope::Annotation { .. }) && run.predictions.iter().all(|p| p.level.is_none());
+                    let what = run.model.name.clone();
+                    let mut run = run;
+                    let mut ink = 0usize;
+                    if let Some(mk) = &mask {
+                        // the page's text mask, then each text label's part of it
+                        let rel = format!("masks/{}-text-{}.png", page_id, run.id);
+                        let mut png = Vec::new();
+                        if image::DynamicImage::ImageLuma8((**mk).clone()).write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).is_ok() {
+                            let _ = util::atomic_write(&s.root.join(&rel), &png);
+                            use sha2::Digest;
+                            run.config.insert("mask".into(), serde_json::json!({"path": rel, "sha256": format!("{:x}", sha2::Sha256::digest(&png)), "size": [mk.width(), mk.height()]}));
+                        }
+                        for (path, bytes) in ai::attach_ink(&mut s.pages[i], mk, &run.id) {
+                            let _ = util::atomic_write(&s.root.join(&path), &bytes);
+                            ink += 1;
+                        }
+                        self.text_masks.insert(page_id.clone(), mk.clone());
+                        self.textures.remove(&format!("mask:{page_id}"));
+                        self.show_text_mask = true;
+                    }
                     let res = ai::apply_run(&mut s.pages[i], run, &cfg);
+                    let kinds = s.pages[i].inference_runs.last().map(run_summary).unwrap_or_default();
                     if cfg.reading.auto_suggest && !single {
                         let dir = crate::assist::page_direction(s.entry(&page_id).map(|e| &e.source), &cfg);
                         crate::assist::apply_order(&mut s.pages[i], &cfg, dir);
@@ -843,9 +945,11 @@ impl App {
                         self.rebaseline();
                     }
                     let msg = if single {
-                        "AI read the selection again: see Transcription (filled if empty, otherwise added as an alternative)".to_string()
+                        format!("{what} read the selection again: see Transcription (filled if empty, otherwise added as an alternative)")
+                    } else if mask.is_some() {
+                        format!("{what} marked the text pixels of {page_id}; {ink} label(s) got an ink mask (View → Text mask shows it)")
                     } else {
-                        format!("AI proposed {} text line(s) on {page_id}; {} overlapped existing work and were left out", res.added, res.skipped)
+                        format!("{what} proposed {} on {page_id}; {} overlapped existing work and were left out{}", if kinds.is_empty() { format!("{} label(s)", res.added) } else { kinds }, res.skipped, if res.alternatives > 0 { format!("; {} reading(s) added as alternatives", res.alternatives) } else { String::new() })
                     };
                     self.flash(msg, ctx);
                 }
@@ -859,6 +963,8 @@ impl App {
             return;
         }
         let user = self.user();
+        let reader = self.cfg().model.reader;
+        let zoo = self.settings.models.clone();
         let Some(s) = &self.store else { return };
         let Some(p) = s.pages.get(page_idx) else { return };
         let Some(e) = s.entry(&p.page_id) else { return };
@@ -869,7 +975,71 @@ impl App {
             kind,
             pinned: s.manifest.config.model.pinned.clone(),
             user,
+            zoo,
+            reader,
         });
+    }
+
+    /// Run a page-wide zoo model (text blocks, layout, text masks) on pages.
+    pub fn ai_zoo_pages(&mut self, pages: &[usize], kind: ai::JobKind, ctx: &egui::Context) {
+        let id = kind.zoo_model(Reader::PpOcr);
+        for &p in pages {
+            self.ai_job(p, kind.clone());
+        }
+        if let Some(id) = id {
+            self.flash(format!("{} is working on {} page(s) in the background; keep working meanwhile", id.name(), pages.len()), ctx);
+        }
+    }
+
+    /// Read each text region of a page that has no lines yet with charspot: lines and characters.
+    pub fn ai_read_blocks(&mut self, page_idx: usize, only: Option<&[String]>, ctx: &egui::Context) {
+        let Some(page) = self.pages().get(page_idx) else { return };
+        let blocks: Vec<(String, [P; 4])> = page
+            .annotations
+            .iter()
+            .filter(|a| a.level == Level::Region && only.is_none_or(|o| o.contains(&a.id)))
+            .filter(|a| !page.annotations.iter().any(|l| matches!(l.level, Level::Line | Level::Word) && l.parent.as_deref() == Some(a.id.as_str())))
+            .map(|a| {
+                let (lo, hi) = a.geometry.bounds();
+                (a.id.clone(), [lo, [hi[0], lo[1]], hi, [lo[0], hi[1]]])
+            })
+            .collect();
+        if blocks.is_empty() {
+            self.error("No text region without lines to read here. Find text blocks first (AI → Find text blocks), or select a region.");
+            return;
+        }
+        let n = blocks.len();
+        self.ai_job(page_idx, ai::JobKind::ReadBlocks { blocks });
+        self.flash(format!("Reading {n} text region(s) into lines and characters"), ctx);
+    }
+
+    /// Find the characters of the selected lines with charspot.
+    pub fn ai_find_chars(&mut self, ctx: &egui::Context) {
+        let ids = self.selection.clone();
+        let lines: Vec<Annotation> = self.cur().map(|p| p.annotations.iter().filter(|a| ids.contains(&a.id) && matches!(a.level, Level::Line | Level::Word)).cloned().collect()).unwrap_or_default();
+        if lines.is_empty() {
+            self.error("Select one or more lines first.");
+            return;
+        }
+        let page = self.page;
+        for a in &lines {
+            let (quad, size) = match (&a.rectification, a.geometry.corners()) {
+                (Some(r), _) => (r.source, r.target_size),
+                (_, Some(q)) => {
+                    let (w, h) = geom::proposed_size(&q);
+                    (q, [w, h])
+                }
+                _ => {
+                    let (lo, hi) = a.geometry.bounds();
+                    let q = [lo, [hi[0], lo[1]], hi, [lo[0], hi[1]]];
+                    let (w, h) = geom::proposed_size(&q);
+                    (q, [w, h])
+                }
+            };
+            let axis = matches!(a.geometry, Geometry::Box { rotation_deg, .. } if rotation_deg.abs() < 0.01) && a.rectification.is_none();
+            self.ai_job(page, ai::JobKind::Characters { annotation_id: a.id.clone(), quad, target_size: size, rectified: !axis });
+        }
+        self.flash(format!("Finding the characters of {} line(s) with charspot", lines.len()), ctx);
     }
 
     pub fn ai_all_pages(&mut self, ctx: &egui::Context) {
@@ -1276,6 +1446,9 @@ impl App {
             self.reread(&ids);
             self.flash(format!("Reading {} label(s) again in the background", ids.len()), ctx);
         }
+        if self.shortcut(ctx, "ai_chars") {
+            self.ai_find_chars(ctx);
+        }
         if self.shortcut(ctx, "hide") {
             self.hide_selection(ctx);
         }
@@ -1461,6 +1634,7 @@ impl App {
             ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
         }
         self.dialogs(&ctx);
+        self.models_window(&ctx);
         self.housekeeping(&ctx);
         self.screenshot_tick(&ctx);
     }
@@ -1476,7 +1650,8 @@ impl App {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             return;
         }
-        if self.frame_no >= 120 && !self.shot_requested {
+        let models_pending = self.models_ui.open && (self.models_ui.snap().is_none() || self.models_ui.refreshing.load(Ordering::SeqCst));
+        if self.frame_no >= 120 && !self.shot_requested && !models_pending {
             self.shot_requested = true;
             let done = self.shot_done.clone();
             let ctx2 = ctx.clone();
