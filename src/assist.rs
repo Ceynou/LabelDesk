@@ -1150,7 +1150,9 @@ pub fn unpin_chars(page: &mut PageFile, line_id: &str) -> usize {
 
 pub fn applicable(field: &str, a: &Annotation, page: &PageFile, cfg: &ProjectConfig) -> bool {
     match field {
-        "transcription" | "recognizability" | "language" | "direction" => a.level.is_text(),
+        // a region's text is the text of its lines: it is not typed twice
+        "transcription" => a.level.is_text() && !text_in_lines(page, a),
+        "recognizability" | "language" | "direction" => a.level.is_text(),
         "classes" => matches!(a.level, Level::Container | Level::Region | Level::Line | Level::Word),
         "mirrored" | "occlusion" | "quality" => a.level.is_text() || a.level == Level::Container,
         "char_boxes" => matches!(a.level, Level::Line | Level::Word | Level::Region) && !a.text().trim().is_empty() && cfg.requirement(Level::Char, &a.classes) == Requirement::Required,
@@ -1673,6 +1675,15 @@ pub fn page_steps(page: &PageFile, cfg: &ProjectConfig, passes: &[Pass], filter:
 }
 
 /// Labels inside `id` (any depth), without `id` itself.
+/// A text region whose lines (or words) carry the text, so it needs no transcription of its own.
+pub fn text_in_lines(page: &PageFile, a: &Annotation) -> bool {
+    a.level == Level::Region
+        && descendants(page, &a.id)
+            .iter()
+            .filter_map(|id| page.get(id))
+            .any(|x| matches!(x.level, Level::Line | Level::Word) && (!x.text().trim().is_empty() || x.recognizability == Some(Recognizability::Unreadable)))
+}
+
 pub fn descendants(page: &PageFile, id: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut stack = vec![id.to_string()];

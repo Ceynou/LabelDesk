@@ -244,3 +244,22 @@ fn real_models_read_the_sample_page() {
     assert!(pg.annotations.iter().filter(|a| a.level == Level::Char).count() >= 8);
     let _ = std::fs::remove_dir_all(&d);
 }
+
+#[test]
+fn regions_with_transcribed_lines_need_no_transcription() {
+    let cfg = ProjectConfig::default();
+    let mut pg = page();
+    pg.annotations.push(Annotation::new("a-reg".into(), Level::Region, "p1", Geometry::Box { x: 0.0, y: 0.0, w: 100.0, h: 200.0, rotation_deg: 0.0 }, "tester", "now"));
+    let missing = |pg: &PageFile| crate::validate::validate_page(&cfg, pg, None).iter().any(|i| i.rule == "missing_transcription" && i.annotation_id.as_deref() == Some("a-reg"));
+    let asks = |pg: &PageFile| crate::assist::needs(pg.get("a-reg").unwrap(), pg, &cfg).iter().any(|n| n.field == "transcription");
+    assert!(missing(&pg) && asks(&pg), "an empty region with no lines still needs its text");
+    let mut line = Annotation::new("a-line".into(), Level::Line, "p1", Geometry::Box { x: 10.0, y: 10.0, w: 30.0, h: 150.0, rotation_deg: 0.0 }, "tester", "now");
+    line.parent = Some("a-reg".into());
+    pg.annotations.push(line.clone());
+    assert!(missing(&pg), "lines without text don't count yet");
+    line.transcription = Some(Transcription { text: "その夜".into(), ..Default::default() });
+    pg.annotations.retain(|a| a.id != "a-line");
+    pg.annotations.push(line);
+    assert!(!missing(&pg) && !asks(&pg), "its lines carry the text");
+    assert!(crate::validate::validate_page(&cfg, &pg, None).iter().any(|i| i.rule == "missing_transcription") == false);
+}

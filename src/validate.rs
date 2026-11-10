@@ -26,7 +26,7 @@ pub const RULES: [(&str, Severity, &str); 25] = [
     ("reading_order_partial", Severity::Warning, "Only some siblings have a reading order"),
     ("level_disabled", Severity::Error, "Annotation of a level this project disables"),
     ("level_required", Severity::Warning, "A required annotation level is missing"),
-    ("missing_transcription", Severity::Error, "Text annotation without transcription"),
+    ("missing_transcription", Severity::Error, "Text annotation without transcription (regions whose lines have text are exempt)"),
     ("required_field", Severity::Error, "Required project field is empty"),
     ("field_value", Severity::Error, "Project field value is not allowed"),
     ("span_range", Severity::Error, "Uncertain/unreadable span outside the text"),
@@ -149,7 +149,7 @@ pub fn validate_page(cfg: &ProjectConfig, page: &PageFile, assets_ok: Option<&st
         }
         // transcription
         let unreadable = a.recognizability == Some(Recognizability::Unreadable) || a.occlusion.as_ref().is_some_and(|x| x.occluded && x.fraction.unwrap_or(0.0) >= 1.0);
-        if a.level.is_text() && a.text().trim().is_empty() && !unreadable {
+        if a.level.is_text() && a.text().trim().is_empty() && !unreadable && !crate::assist::text_in_lines(page, a) {
             o.push("missing_transcription", id, format!("{}: no transcription (mark it unreadable if it cannot be read)", a.level.name()));
         }
         if let Some(t) = &a.transcription {

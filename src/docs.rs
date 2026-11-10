@@ -70,6 +70,8 @@ the next coarser enabled text level must have children of that level.
   simply be left out and marked with `occlusion`.
 * `alternatives` hold other readings with who proposed them (people or models).
 * Translations and transliterations live in `translations`, never in `transcription`.
+* A text region whose lines (or words) have text needs no transcription of its own: its text
+  is its lines' text in reading order. One may still be given (it is then checked like any other).
 * Character annotations (`char`) carry one grapheme cluster in `text`.
 
 ## Reading order

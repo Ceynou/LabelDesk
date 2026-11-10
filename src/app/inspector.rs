@@ -209,6 +209,12 @@ impl App {
             return;
         }
         self.assist_strip(ui, &orig);
+        // a region whose lines carry the text: show it, it is not typed again
+        let from_lines: Option<String> = self.cur().filter(|p| crate::assist::text_in_lines(p, &orig)).map(|p| {
+            let mut lines: Vec<&Annotation> = p.annotations.iter().filter(|x| matches!(x.level, Level::Line | Level::Word) && x.parent.as_deref() == Some(orig.id.as_str())).collect();
+            lines.sort_by_key(|x| x.reading_order.unwrap_or(u32::MAX));
+            lines.iter().map(|x| x.text()).collect::<Vec<_>>().join(" / ")
+        });
         let mut a = orig.clone();
         ui.horizontal(|ui| {
             egui::ComboBox::from_id_salt("level").width(130.0).selected_text(a.level.name()).show_ui(ui, |ui| {
@@ -258,8 +264,15 @@ impl App {
         }
 
         section(ui, "TRANSCRIPTION");
+        if let Some(t) = &from_lines {
+            ui.label(RichText::new(format!("From its lines: {t}")).size(16.0));
+            if a.transcription.as_ref().is_none_or(|x| x.text.trim().is_empty()) {
+                ui.label(RichText::new("Not needed: the lines inside carry the text.").color(MUTED).size(11.5));
+            }
+        }
         if a.transcription.is_none() {
-            if ui.button("Add a transcription").clicked() {
+            let label = if from_lines.is_some() { "Add a transcription of its own anyway" } else { "Add a transcription" };
+            if ui.button(label).clicked() {
                 a.transcription = Some(Transcription {
                     language: (!cfg.default_language.is_empty()).then(|| cfg.default_language.clone()),
                     script: (!cfg.default_script.is_empty()).then(|| cfg.default_script.clone()),
