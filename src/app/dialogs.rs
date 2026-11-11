@@ -298,7 +298,6 @@ impl App {
                     }
                 }
             });
-            ui.add_enabled(false, egui::Checkbox::new(&mut cfg.model.character_model_enabled, "Character-level model (muscgab/manga-ocr-charspot-small): planned"));
 
             ui.separator();
             ui.heading("Validation");

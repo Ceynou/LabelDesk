@@ -55,6 +55,14 @@ pub enum Component {
 
 impl Component {
     pub const ALL: [Component; 3] = [Component::OnnxRuntime, Component::Ncnn, Component::Pnnx];
+    /// The file to look for, in words.
+    pub fn library_hint(self) -> &'static str {
+        match self {
+            Component::OnnxRuntime => if cfg!(windows) { "onnxruntime.dll" } else if cfg!(target_os = "macos") { "libonnxruntime.dylib" } else { "libonnxruntime.so" },
+            Component::Ncnn => if cfg!(windows) { "ncnn.dll" } else if cfg!(target_os = "macos") { "libncnn.dylib" } else { "libncnn.so" },
+            Component::Pnnx => "the pnnx program",
+        }
+    }
     pub fn name(self) -> &'static str {
         match self {
             Component::OnnxRuntime => "ONNX Runtime",
@@ -403,6 +411,43 @@ pub fn unpack(archive: &Path, dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// A file a person chose for a component: the library itself, or a downloaded release archive
+/// (.tgz, .tar.gz, .zip), which is unpacked into LabelDesk's data folder. Returns the file to use.
+pub fn adopt_chosen(c: Component, chosen: &Path) -> Result<PathBuf, String> {
+    adopt_chosen_in(c, chosen, &component_dir(c))
+}
+
+fn adopt_chosen_in(c: Component, chosen: &Path, base: &Path) -> Result<PathBuf, String> {
+    let name = chosen.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    let lower = name.to_ascii_lowercase();
+    if c.file_matches(&name) {
+        return Ok(chosen.to_path_buf());
+    }
+    let archive = lower.ends_with(".tgz") || lower.ends_with(".tar.gz") || lower.ends_with(".zip");
+    if !archive {
+        if chosen.is_dir() {
+            return find_file(chosen, c, 5).ok_or_else(|| format!("No {} library inside {}", c.name(), chosen.display()));
+        }
+        return Err(format!("{name} is not {} (expected {} or its release archive)", c.name(), c.library_hint()));
+    }
+    let stem = lower.trim_end_matches(".tgz").trim_end_matches(".tar.gz").trim_end_matches(".zip").to_string();
+    let dir = base.join(format!("chosen-{}", crate::util::slug(&stem)));
+    if let Some(p) = find_file(&dir, c, 5) {
+        return Ok(p);
+    }
+    let staging = dir.with_extension("unpacking");
+    let _ = std::fs::remove_dir_all(&staging);
+    unpack(chosen, &staging).map_err(|e| format!("Could not unpack {name}: {e}"))?;
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::rename(&staging, &dir).map_err(|e| e.to_string())?;
+    let sha = sha256_cached(chosen).unwrap_or_default();
+    let note = serde_json::json!({"component": c.id(), "source": chosen.display().to_string(), "sha256": sha, "installed": crate::util::now()});
+    let _ = std::fs::write(dir.join("SOURCE.json"), serde_json::to_string_pretty(&note).unwrap_or_default());
+    let found = find_file(&dir, c, 5).ok_or_else(|| format!("{name} was unpacked but no {} library is inside", c.name()))?;
+    forget_probes();
+    Ok(found)
+}
+
 /// Install the pinned release of a component. Returns the file to load or run.
 pub fn install(c: Component, progress: &Mutex<Progress>) -> Result<PathBuf, String> {
     let rel = release(c).ok_or_else(|| format!("{} publishes no ready-made build for this computer ({} {}); set its location in the Models window instead.", c.name(), std::env::consts::OS, std::env::consts::ARCH))?;
@@ -469,4 +514,36 @@ pub fn memory_mb() -> Option<(u64, u64)> {
     let s = std::fs::read_to_string("/proc/meminfo").ok()?;
     let field = |k: &str| s.lines().find(|l| l.starts_with(k)).and_then(|l| l.split_whitespace().nth(1)).and_then(|v| v.parse::<u64>().ok());
     Some((field("MemTotal:")? / 1024, field("MemAvailable:")? / 1024))
+}
+
+#[cfg(test)]
+mod chosen_tests {
+    use super::*;
+
+    #[test]
+    fn a_chosen_release_archive_is_unpacked_to_its_library() {
+        let ref_tgz = Path::new(env!("CARGO_MANIFEST_DIR")).join("../reference/onnxruntime-linux-x64-1.31.1.tgz");
+        let dir = std::env::temp_dir().join(format!("labeldesk-chosen-{}", std::process::id()));
+        let tgz = if ref_tgz.exists() {
+            ref_tgz
+        } else {
+            // a tiny stand-in archive with the same layout
+            let src = dir.join("src").join("onnxruntime-linux-x64-0.0.0").join("lib");
+            std::fs::create_dir_all(&src).unwrap();
+            std::fs::write(src.join("libonnxruntime.so"), b"not really").unwrap();
+            let out = dir.join("onnxruntime-linux-x64-0.0.0.tgz");
+            let f = std::fs::File::create(&out).unwrap();
+            let mut t = tar::Builder::new(flate2::write::GzEncoder::new(f, flate2::Compression::fast()));
+            t.append_dir_all("onnxruntime-linux-x64-0.0.0", dir.join("src").join("onnxruntime-linux-x64-0.0.0")).unwrap();
+            t.into_inner().unwrap().finish().unwrap();
+            out
+        };
+        let base = dir.join("data");
+        let lib = adopt_chosen_in(Component::OnnxRuntime, &tgz, &base).unwrap();
+        assert!(lib.file_name().unwrap().to_string_lossy().starts_with("libonnxruntime.so"), "{lib:?}");
+        assert!(lib.starts_with(dir.join("data")), "unpacked into the data folder: {lib:?}");
+        assert_eq!(adopt_chosen_in(Component::OnnxRuntime, &tgz, &base).unwrap(), lib, "a second choice reuses it");
+        assert!(adopt_chosen_in(Component::OnnxRuntime, &tgz.with_extension("txt"), &base).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

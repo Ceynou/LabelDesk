@@ -143,6 +143,13 @@ pub struct Options {
     /// Score above which AnimeText's blocks are proposed (empty: the model's own F1 threshold).
     #[serde(default)]
     pub anime_threshold: Option<f32>,
+    /// Python virtual environment used to convert PyTorch models (created there if missing).
+    #[serde(default = "default_venv")]
+    pub python_venv: String,
+}
+
+pub fn default_venv() -> String {
+    "~/.venv".into()
 }
 
 fn default_variant() -> String {
@@ -154,7 +161,7 @@ fn default_resolution() -> u32 {
 
 impl Default for Options {
     fn default() -> Self {
-        Options { anime_variant: default_variant(), layout_resolution: default_resolution(), backends: BTreeMap::new(), gpu: 0, ort_path: String::new(), ncnn_path: String::new(), anime_threshold: None }
+        Options { anime_variant: default_variant(), layout_resolution: default_resolution(), backends: BTreeMap::new(), gpu: 0, ort_path: String::new(), ncnn_path: String::new(), anime_threshold: None, python_venv: default_venv() }
     }
 }
 

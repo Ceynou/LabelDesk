@@ -169,23 +169,51 @@ pub fn find_python() -> Option<(PathBuf, String)> {
     None
 }
 
-pub fn venv_dir() -> PathBuf {
-    runtime::data_dir().join("converter").join("venv")
+/// The Python virtual environment set in the Models window (`~` is the home folder); empty
+/// means LabelDesk's own one in its data folder.
+pub fn venv_dir(o: &zoo::Options) -> PathBuf {
+    let s = o.python_venv.trim();
+    if s.is_empty() {
+        return runtime::data_dir().join("converter").join("venv");
+    }
+    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(PathBuf::from);
+    match (s.strip_prefix("~/").or_else(|| s.strip_prefix("~\\")), home) {
+        (Some(rest), Some(h)) => h.join(rest),
+        _ if s == "~" => std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(s)),
+        _ => PathBuf::from(s),
+    }
 }
 
-fn venv_python() -> PathBuf {
-    if cfg!(windows) { venv_dir().join("Scripts").join("python.exe") } else { venv_dir().join("bin").join("python") }
+pub fn venv_python(o: &zoo::Options) -> PathBuf {
+    let d = venv_dir(o);
+    if cfg!(windows) { d.join("Scripts").join("python.exe") } else { d.join("bin").join("python") }
 }
 
-/// Make the private environment and install what the model's exporter needs.
-fn ensure_python(id: ZooId, state: &Mutex<State>, cancel: &std::sync::atomic::AtomicBool) -> Result<PathBuf, String> {
-    let py = venv_python();
+/// The Python version of the chosen environment, when it exists.
+pub fn venv_version(o: &zoo::Options) -> Option<String> {
+    let py = venv_python(o);
     if !py.exists() {
-        let (sys_py, ver) = find_python().ok_or("Python 3.10 or newer is needed once, to convert this model. Install it from python.org, then try again.")?;
-        say(state, format!("Using Python {ver} to make a private environment"));
+        return None;
+    }
+    let mut c = Command::new(py);
+    c.arg("-c").arg("import sys; print('%d.%d' % sys.version_info[:2])");
+    let out = runtime::run_with_timeout(c, std::time::Duration::from_secs(20)).ok()?;
+    (out.0 == Some(0)).then(|| String::from_utf8_lossy(&out.1).trim().to_string())
+}
+
+/// Use the chosen environment (made with the system Python if it does not exist yet) and install
+/// what the model's exporter needs into it.
+fn ensure_python(id: ZooId, o: &zoo::Options, state: &Mutex<State>, cancel: &std::sync::atomic::AtomicBool) -> Result<PathBuf, String> {
+    let py = venv_python(o);
+    let dir = venv_dir(o);
+    if py.exists() {
+        say(state, format!("Using the Python environment in {}", dir.display()));
+    } else {
+        let (sys_py, ver) = find_python().ok_or("Python 3.10 or newer is needed once, to convert this model. Install it from python.org, or set an existing virtual environment in AI → Models…, then try again.")?;
+        say(state, format!("Using Python {ver} to make the environment {}", dir.display()));
         let mut c = Command::new(sys_py);
-        c.arg("-m").arg("venv").arg(venv_dir());
-        run(state, cancel, c, "Making the private Python environment")?;
+        c.arg("-m").arg("venv").arg(&dir);
+        run(state, cancel, c, "Making the Python environment")?;
     }
     let pip = |args: &[&str]| {
         let mut c = Command::new(&py);
@@ -280,7 +308,7 @@ fn convert(id: ZooId, target: Target, o: &zoo::Options, state: &Mutex<State>, ca
         if let (ZooId::KoharuLayout, Some((_, free))) = (id, runtime::memory_mb()) {
             say(state, format!("This computer has about {free} MB of memory free; converting needs roughly 3 GB."));
         }
-        let py = ensure_python(id, state, cancel)?;
+        let py = ensure_python(id, o, state, cancel)?;
         let script = runtime::data_dir().join("converter").join("export_koharu.py");
         std::fs::create_dir_all(script.parent().unwrap()).map_err(|e| e.to_string())?;
         std::fs::write(&script, EXPORT_SCRIPT).map_err(|e| e.to_string())?;

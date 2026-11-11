@@ -20,6 +20,8 @@ pub struct Snapshot {
     pub models: BTreeMap<ZooId, Result<Located, String>>,
     pub ppocr: Option<String>,
     pub python: Option<String>,
+    /// Python version of the chosen virtual environment, when it exists.
+    pub venv: Option<String>,
     pub memory: Option<(u64, u64)>,
 }
 
@@ -80,7 +82,8 @@ impl ModelsUi {
                 s.models.insert(id, zoo::locate(id, &o));
             }
             s.ppocr = crate::ocr::find_candidates().first().map(|c| format!("{} · rev {}", c.version_str(), &c.revision[..c.revision.len().min(8)]));
-            s.python = convert::find_python().map(|(_, v)| v);
+            s.venv = convert::venv_version(&o);
+            s.python = s.venv.clone().or_else(|| convert::find_python().map(|(_, v)| v));
             s.memory = runtime::memory_mb();
             *snap.lock().unwrap() = Some(s);
             flag.store(false, std::sync::atomic::Ordering::SeqCst);
@@ -235,12 +238,19 @@ impl App {
                         }
                     }
                     if *c != Component::Pnnx && ui.button("Choose file…").on_hover_text("Use a copy you already have").clicked() {
-                        if let Some(p) = rfd::FileDialog::new().pick_file() {
-                            match c {
-                                Component::OnnxRuntime => self.settings.models.ort_path = p.display().to_string(),
-                                _ => self.settings.models.ncnn_path = p.display().to_string(),
+                        if let Some(p) = rfd::FileDialog::new().set_title(format!("Choose {} ({} or its release archive)", c.name(), c.library_hint())).pick_file() {
+                            // a release archive is unpacked first: the library inside is what loads
+                            match runtime::adopt_chosen(*c, &p) {
+                                Ok(lib) => {
+                                    match c {
+                                        Component::OnnxRuntime => self.settings.models.ort_path = lib.display().to_string(),
+                                        _ => self.settings.models.ncnn_path = lib.display().to_string(),
+                                    }
+                                    self.settings.save();
+                                    self.models_ui.looked_for = None;
+                                }
+                                Err(e) => self.error(e),
                             }
-                            self.settings.save();
                         }
                     }
                     let explicit = match c {
@@ -280,6 +290,30 @@ impl App {
         // ---------------------------------------------------------------- models
         ui.add_space(8.0);
         ui.heading("Models");
+        ui.horizontal(|ui| {
+            ui.label("Python environment for conversions");
+            let mut v = self.settings.models.python_venv.clone();
+            let r = ui.add(egui::TextEdit::singleline(&mut v).hint_text("~/.venv").desired_width(220.0));
+            if ui.button("Choose folder…").clicked() {
+                if let Some(d) = rfd::FileDialog::new().set_title("Choose a Python virtual environment").pick_folder() {
+                    v = d.display().to_string();
+                }
+            }
+            if v != self.settings.models.python_venv {
+                self.settings.models.python_venv = v;
+                if !r.has_focus() {
+                    self.settings.save();
+                }
+            }
+            if r.lost_focus() {
+                self.settings.save();
+            }
+        });
+        let where_ = convert::venv_dir(&self.settings.models).display().to_string();
+        match &snap.venv {
+            Some(v) => ui.label(good(format!("Python {v} in {where_}: PyTorch and the model's code are installed into it when a model is converted"))),
+            None => ui.label(muted(format!("{where_} does not exist yet: it is made with the system Python on the first conversion (empty field: LabelDesk's own folder)"))),
+        };
         ui.group(|ui| {
             ui.set_width(ui.available_width());
             ui.label(RichText::new("PP-OCRv6 manga").strong());
@@ -372,7 +406,8 @@ impl App {
                         ui.horizontal(|ui| {
                             if id.needs_export() && !onnx {
                                 let tip = match &snap.python {
-                                    Some(v) => format!("Uses Python {v} once to make a private environment with PyTorch (about 1 GB on disk), then writes the ONNX model. Takes many minutes."),
+                                    Some(v) if snap.venv.is_some() => format!("Uses your Python {v} environment, installs PyTorch and the model's code there if missing (about 1 GB), then writes the ONNX model. Takes many minutes."),
+                                    Some(v) => format!("Uses Python {v} once to make the environment with PyTorch (about 1 GB on disk), then writes the ONNX model. Takes many minutes."),
                                     None => "Needs Python 3.10 or newer once (python.org). Then LabelDesk makes a private environment with PyTorch and writes the ONNX model.".to_string(),
                                 };
                                 if ui.add_enabled(!task_running, egui::Button::new("Convert to ONNX")).on_hover_text(tip).clicked() {
